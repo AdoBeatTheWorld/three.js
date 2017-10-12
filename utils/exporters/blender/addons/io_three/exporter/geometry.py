@@ -15,8 +15,8 @@ class Geometry(base_classes.BaseNode):
     def __init__(self, node, parent=None):
         logger.debug("Geometry().__init__(%s)", node)
 
-        #@TODO: maybe better to have `three` constants for
-        #       strings that are specific to `three` properties
+#       @TODO: maybe better to have `three` constants for
+#              strings that are specific to `three` properties
         geo_type = constants.GEOMETRY.title()
         if parent.options.get(constants.GEOMETRY_TYPE):
             opt_type = parent.options[constants.GEOMETRY_TYPE]
@@ -45,7 +45,7 @@ class Geometry(base_classes.BaseNode):
             ext = constants.PACK
 
         key = ''
-        for key in (constants.MORPH_TARGETS, constants.ANIMATION):
+        for key in (constants.MORPH_TARGETS, constants.ANIMATION, constants.CLIPS):
             if key in self.keys():
                 break
         else:
@@ -69,7 +69,16 @@ class Geometry(base_classes.BaseNode):
 
         length = len(faces)
         offset = 0
-        bitset = lambda x, y: x & (1 << y)
+
+        def bitset(bit, mask):
+            """
+
+            :type bit: int
+            :type mask: int
+
+            """
+            return bit & (1 << mask)
+
         face_count = 0
 
         masks = (constants.MASK[constants.UVS],
@@ -139,11 +148,11 @@ class Geometry(base_classes.BaseNode):
     def copy_textures(self, texture_folder=''):
         """Copy the textures to the destination directory."""
         logger.debug("Geometry().copy_textures()")
-        if self.options.get(constants.COPY_TEXTURES):
+        if self.options.get(constants.EXPORT_TEXTURES) and not self.options.get(constants.EMBED_TEXTURES):
             texture_registration = self.register_textures()
             if texture_registration:
                 logger.info("%s has registered textures", self.node)
-                dirname = os.path.dirname(self.scene.filepath)
+                dirname = os.path.dirname(os.path.abspath(self.scene.filepath))
                 full_path = os.path.join(dirname, texture_folder)
                 io.copy_registered_textures(
                     full_path, texture_registration)
@@ -169,7 +178,7 @@ class Geometry(base_classes.BaseNode):
 
     def write(self, filepath=None):
         """Write the geometry definitions to disk. Uses the
-        desitnation path of the scene.
+        destination path of the scene.
 
         :param filepath: optional output file path
                         (Default value = None)
@@ -197,7 +206,7 @@ class Geometry(base_classes.BaseNode):
         """
         logger.debug("Geometry().write_animation(%s)", filepath)
 
-        for key in (constants.MORPH_TARGETS, constants.ANIMATION):
+        for key in (constants.MORPH_TARGETS, constants.ANIMATION, constants.CLIPS):
             try:
                 data = self[key]
                 break
@@ -213,8 +222,8 @@ class Geometry(base_classes.BaseNode):
             io.dump(filepath, data, options=self.scene.options)
             return filepath
         else:
-            logger.warning("Could not determine a filepath for "\
-                "animation data. Nothing written to disk.")
+            logger.warning("Could not determine a filepath for "
+                           "animation data. Nothing written to disk.")
 
     def _component_data(self):
         """Query the component data only
@@ -225,17 +234,24 @@ class Geometry(base_classes.BaseNode):
         logger.debug("Geometry()._component_data()")
 
         if self[constants.TYPE] != constants.GEOMETRY.title():
-            return self[constants.ATTRIBUTES]
+            data = {}
+            index = self.get(constants.INDEX)
+            if index is not None:
+                data[constants.INDEX] = index
+            data[constants.ATTRIBUTES] = self.get(constants.ATTRIBUTES)           
+            data[constants.GROUPS] = self.get(constants.GROUPS)
+            return {constants.DATA: data}
 
         components = [constants.VERTICES, constants.FACES,
                       constants.UVS, constants.COLORS,
                       constants.NORMALS, constants.BONES,
                       constants.SKIN_WEIGHTS,
-                      constants.SKIN_INDICES, constants.NAME,
-                      constants.INFLUENCES_PER_VERTEX]
+                      constants.SKIN_INDICES,
+                      constants.INFLUENCES_PER_VERTEX,
+                      constants.INDEX]
 
         data = {}
-        anim_components = [constants.MORPH_TARGETS, constants.ANIMATION]
+        anim_components = [constants.MORPH_TARGETS, constants.ANIMATION, constants.MORPH_TARGETS_ANIM, constants.CLIPS]
         if self.options.get(constants.EMBED_ANIMATION):
             components.extend(anim_components)
         else:
@@ -251,6 +267,12 @@ class Geometry(base_classes.BaseNode):
             else:
                 logger.info("No animation data found for %s", self.node)
 
+        option_extra_vgroups = self.options.get(constants.EXTRA_VGROUPS)
+
+        for name, index in api.mesh.extra_vertex_groups(self.node,
+                                                        option_extra_vgroups):
+            components.append(name)
+
         for component in components:
             try:
                 data[component] = self[component]
@@ -265,16 +287,17 @@ class Geometry(base_classes.BaseNode):
         :rtype: dict
 
         """
-        data = self._component_data()
-
-        if self[constants.TYPE] != constants.GEOMETRY.title():
-            data = {constants.ATTRIBUTES: data}
-
-        data[constants.METADATA] = {
-            constants.TYPE: self[constants.TYPE]
+        data = {
+            constants.METADATA: {
+                constants.TYPE: self[constants.TYPE]
+            }
         }
-
         data[constants.METADATA].update(self.metadata)
+        data.update(self._component_data())
+
+        draw_calls = self.get(constants.DRAW_CALLS)
+        if draw_calls is not None:
+            data[constants.DRAW_CALLS] = draw_calls
 
         return data
 
@@ -290,7 +313,7 @@ class Geometry(base_classes.BaseNode):
             metadata[key] = len(array)/size
 
     def _geometry_metadata(self, metadata):
-        """Three.Geometry metadat
+        """Three.Geometry metadata
 
         :rtype: dict
 
@@ -319,31 +342,24 @@ class Geometry(base_classes.BaseNode):
             metadata[constants.FACES] = faces
 
     def _scene_format(self):
-        """Format the output for Scene compatability
+        """Format the output for Scene compatibility
 
         :rtype: dict
 
         """
         data = {
+            constants.NAME: self[constants.NAME],
             constants.UUID: self[constants.UUID],
             constants.TYPE: self[constants.TYPE]
         }
 
-        component_data = self._component_data()
         if self[constants.TYPE] == constants.GEOMETRY.title():
-            data[constants.DATA] = component_data
-            data[constants.DATA].update({
-                constants.METADATA: self.metadata
-            })
+            data[constants.DATA] = self._component_data()
         else:
-            if self.options.get(constants.EMBED_GEOMETRY, True):
-                data[constants.DATA] = {
-                    constants.ATTRIBUTES: component_data
-                }
-            else:
-                data[constants.ATTRIBUTES] = component_data
-            data[constants.METADATA] = self.metadata
-            data[constants.NAME] = self[constants.NAME]
+            data.update(self._component_data())
+            draw_calls = self.get(constants.DRAW_CALLS)
+            if draw_calls is not None:
+                data[constants.DRAW_CALLS] = draw_calls
 
         return data
 
@@ -354,14 +370,21 @@ class Geometry(base_classes.BaseNode):
         options_vertices = self.options.get(constants.VERTICES)
         option_normals = self.options.get(constants.NORMALS)
         option_uvs = self.options.get(constants.UVS)
+        option_colors = self.options.get(constants.COLORS)
+        option_extra_vgroups = self.options.get(constants.EXTRA_VGROUPS)
+        option_index_type = self.options.get(constants.INDEX_TYPE)
 
         pos_tuple = (constants.POSITION, options_vertices,
-                     api.mesh.buffer_position, 3)
+                     lambda m: api.mesh.buffer_position(m, self.options), 3)
         uvs_tuple = (constants.UV, option_uvs,
                      api.mesh.buffer_uv, 2)
+        uvs2_tuple = (constants.UV2, option_uvs,
+                     lambda m: api.mesh.buffer_uv(m, layer=1), 2)
         normals_tuple = (constants.NORMAL, option_normals,
-                         api.mesh.buffer_normal, 3)
-        dispatch = (pos_tuple, uvs_tuple, normals_tuple)
+                         lambda m: api.mesh.buffer_normal(m, self.options), 3)
+        colors_tuple = (constants.COLOR, option_colors,
+                        lambda m: api.mesh.buffer_color(m, self.options), 3)
+        dispatch = (pos_tuple, uvs_tuple, uvs2_tuple, normals_tuple, colors_tuple)
 
         for key, option, func, size in dispatch:
 
@@ -379,15 +402,169 @@ class Geometry(base_classes.BaseNode):
                 constants.ARRAY: array
             }
 
+        for name, index in api.mesh.extra_vertex_groups(self.node,
+                                                        option_extra_vgroups):
+
+            logger.info("Exporting extra vertex group %s", name)
+
+            array = api.mesh.buffer_vertex_group_data(self.node, index)
+            if not array:
+                logger.warning("No array could be made for %s", name)
+                continue
+
+            self[constants.ATTRIBUTES][name] = {
+                constants.ITEM_SIZE: 1,
+                constants.TYPE: constants.FLOAT_32,
+                constants.ARRAY: array
+            }
+
+        if option_index_type != constants.NONE:
+
+            assert(not (self.get(constants.INDEX) or
+                        self.get(constants.DRAW_CALLS)))
+
+            indices_per_face = 3
+            index_threshold = 0xffff - indices_per_face
+            if option_index_type == constants.UINT_32:
+                index_threshold = 0x7fffffff - indices_per_face
+
+            attrib_data_in, attrib_data_out, attrib_keys = [], [], []
+
+            i = 0
+            for key, entry in self[constants.ATTRIBUTES].items():
+
+                item_size = entry[constants.ITEM_SIZE]
+
+                attrib_keys.append(key)
+                attrib_data_in.append((entry[constants.ARRAY], item_size))
+                attrib_data_out.append(([], i, i + item_size))
+                i += item_size
+
+            index_data, draw_calls = [], []
+            indexed, flush_req, base_vertex = {}, False, 0
+
+            assert(len(attrib_data_in) > 0)
+            array, item_size = attrib_data_in[0]
+            i, n = 0, len(array) / item_size
+
+
+            while i < n:
+
+                vertex_data = ()
+                for array, item_size in attrib_data_in:
+                    vertex_data += tuple(
+                            array[i * item_size:(i + 1) * item_size])
+
+                vertex_index = indexed.get(vertex_data)
+
+                if vertex_index is None:
+
+                    vertex_index = len(indexed)
+                    flush_req = vertex_index >= index_threshold
+
+                    indexed[vertex_data] = vertex_index
+                    for array, i_from, i_to in attrib_data_out:
+                        array.extend(vertex_data[i_from:i_to])
+
+                index_data.append(vertex_index)
+
+                i += 1
+                if i == n:
+                    flush_req = len(draw_calls) > 0
+                    assert(i % indices_per_face == 0)
+
+                if flush_req and i % indices_per_face == 0:
+                    start, count = 0, len(index_data)
+                    if draw_calls:
+                        prev = draw_calls[-1]
+                        start = (prev[constants.DC_START] +
+                                 prev[constants.DC_COUNT])
+                        count -= start
+                    draw_calls.append({
+                        constants.DC_START: start,
+                        constants.DC_COUNT: count,
+                        constants.DC_INDEX: base_vertex
+                    })
+                    base_vertex += len(indexed)
+                    indexed.clear()
+                    flush_req = False
+
+
+            #manthrax: Adding group support for multiple materials
+            #index_threshold = indices_per_face*100
+            face_materials = api.mesh.buffer_face_material(self.node,self.options)
+            logger.info("Face material list length:%d",len(face_materials))
+            logger.info("Drawcall parameters count:%s item_size=%s",n,item_size)
+            assert((len(face_materials)*3)==n)
+            #Re-index the index buffer by material
+            used_material_indexes = {}
+            #Get lists of faces indices per material
+            for idx, mat_index in enumerate(face_materials):
+                if used_material_indexes.get(mat_index) is None:
+                    used_material_indexes[mat_index] = [idx]
+                else:
+                    used_material_indexes[mat_index].append(idx)
+
+            logger.info("# Faces by material:%s",str(used_material_indexes))
+
+            #manthrax: build new index list from lists of faces by material, and build the draw groups at the same time...
+            groups = []
+            new_index = []
+            print("Mat index:",str(used_material_indexes))
+
+            for mat_index in used_material_indexes:
+                face_array=used_material_indexes[mat_index]
+                print("Mat index:",str(mat_index),str(face_array))
+
+                print( dir(self.node) )
+
+                group = {
+                    'start': len(new_index),
+                    'count': len(face_array)*3,
+                    'materialIndex': mat_index
+                }
+                groups.append(group)
+
+                for fi in range(len(face_array)):
+                    prim_index = face_array[fi]
+                    prim_index = prim_index * 3
+                    new_index.extend([index_data[prim_index],index_data[prim_index+1],index_data[prim_index+2]])
+
+            if len(groups) > 0:
+                index_data = new_index
+                self[constants.GROUPS]=groups
+            #else:
+            #    self[constants.GROUPS]=[{
+            #    'start':0,
+            #    'count':n,
+            #   'materialIndex':0
+            #}]
+            #manthrax: End group support
+
+
+
+            for i, key in enumerate(attrib_keys):
+                array = attrib_data_out[i][0]
+                self[constants.ATTRIBUTES][key][constants.ARRAY] = array
+
+            self[constants.INDEX] = {
+                constants.ITEM_SIZE: 1,
+                constants.TYPE: option_index_type,
+                constants.ARRAY: index_data
+            }
+            if (draw_calls):
+                logger.info("draw_calls = %s", repr(draw_calls))
+                self[constants.DRAW_CALLS] = draw_calls
+
     def _parse_geometry(self):
         """Parse the geometry to Three.Geometry specs"""
         if self.options.get(constants.VERTICES):
             logger.info("Parsing %s", constants.VERTICES)
-            self[constants.VERTICES] = api.mesh.vertices(self.node) or []
+            self[constants.VERTICES] = api.mesh.vertices(self.node, self.options) or []
 
         if self.options.get(constants.NORMALS):
             logger.info("Parsing %s", constants.NORMALS)
-            self[constants.NORMALS] = api.mesh.normals(self.node) or []
+            self[constants.NORMALS] = api.mesh.normals(self.node, self.options) or []
 
         if self.options.get(constants.COLORS):
             logger.info("Parsing %s", constants.COLORS)
@@ -405,8 +582,9 @@ class Geometry(base_classes.BaseNode):
 
         if self.options.get(constants.FACES):
             logger.info("Parsing %s", constants.FACES)
+            material_list = self.get(constants.MATERIALS)
             self[constants.FACES] = api.mesh.faces(
-                self.node, self.options) or []
+                self.node, self.options, material_list=material_list) or []
 
         no_anim = (None, False, constants.OFF)
         if self.options.get(constants.ANIMATION) not in no_anim:
@@ -414,8 +592,8 @@ class Geometry(base_classes.BaseNode):
             self[constants.ANIMATION] = api.mesh.skeletal_animation(
                 self.node, self.options) or []
 
-        #@TODO: considering making bones data implied when
-        #       querying skinning data
+#       @TODO: considering making bones data implied when
+#              querying skinning data
 
         bone_map = {}
         if self.options.get(constants.BONES):
@@ -427,15 +605,35 @@ class Geometry(base_classes.BaseNode):
             logger.info("Parsing %s", constants.SKINNING)
             influences = self.options.get(
                 constants.INFLUENCES_PER_VERTEX, 2)
+            anim_type = self.options.get(constants.ANIMATION)
 
             self[constants.INFLUENCES_PER_VERTEX] = influences
             self[constants.SKIN_INDICES] = api.mesh.skin_indices(
-                self.node, bone_map, influences) or []
+                self.node, bone_map, influences, anim_type) or []
             self[constants.SKIN_WEIGHTS] = api.mesh.skin_weights(
-                self.node, bone_map, influences) or []
+                self.node, bone_map, influences, anim_type) or []
 
-        if self.options.get(constants.MORPH_TARGETS):
+        if self.options.get(constants.BLEND_SHAPES):
+            logger.info("Parsing %s", constants.BLEND_SHAPES)
+            mt = api.mesh.blend_shapes(self.node, self.options) or []
+            self[constants.MORPH_TARGETS] = mt
+            if len(mt) > 0 and self._scene:  # there's blend shapes, let check for animation
+                tracks = api.mesh.animated_blend_shapes(self.node, self[constants.NAME], self.options) or []
+                merge = self._scene[constants.ANIMATION][0][constants.KEYFRAMES]
+                for track in tracks:
+                    merge.append(track)
+        elif self.options.get(constants.MORPH_TARGETS):
             logger.info("Parsing %s", constants.MORPH_TARGETS)
             self[constants.MORPH_TARGETS] = api.mesh.morph_targets(
                 self.node, self.options) or []
 
+        # In the moment there is no way to add extra data to a Geomtry in
+        # Three.js. In case there is some day, here is the code:
+        #
+        # option_extra_vgroups = self.options.get(constants.EXTRA_VGROUPS)
+        #
+        # for name, index in api.mesh.extra_vertex_groups(self.node,
+        #                                                 option_extra_vgroups):
+        #
+        #         logger.info("Exporting extra vertex group %s", name)
+        #         self[name] = api.mesh.vertex_group_data(self.node, index)

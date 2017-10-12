@@ -14,7 +14,7 @@
 	</head>
 	<body>
 
-		<script src="../build/three.min.js"></script>
+		<script src="../build/three.js"></script>
 
 		<script src="js/renderers/Projector.js"></script>
 		<script src="js/renderers/SVGRenderer.js"></script>
@@ -42,6 +42,7 @@
 				camera.position.z = 500;
 
 				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xf0f0f0 );
 
 				// QRCODE
 
@@ -177,15 +178,12 @@
 				scene.add( directional );
 
 				renderer = new THREE.SVGRenderer();
-				renderer.setClearColor( 0xf0f0f0 );
 				renderer.setSize( window.innerWidth, window.innerHeight );
 				renderer.setQuality( 'low' );
 				document.body.appendChild( renderer.domElement );
 
 				stats = new Stats();
-				stats.domElement.style.position = 'absolute';
-				stats.domElement.style.top = '0px';
-				document.body.appendChild( stats.domElement );
+				document.body.appendChild( stats.dom );
 
 				//
 
